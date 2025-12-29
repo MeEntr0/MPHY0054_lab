@@ -20,20 +20,26 @@ in RViz.
 # ╔════════════════════════════════════════════════════════════════════════╗
 # ║           SOLUTION FOR PART 1: DH PARAMETERS & JOINT OFFSETS           ║
 # ╚════════════════════════════════════════════════════════════════════════╝
-# DH parameters for the youbot arm
-youbot_dh_parameters = {'a': [],
-                        'alpha': [],
-                        'd': [],
-                        'theta': []}
+youbot_dh_parameters = {
+    'a':     [0.033,   0.155, 0.135, 0.0,   -0.002],
+    'alpha': [-np.pi/2, 0.0,  0.0,  -np.pi/2, 0.0],
+    'd':     [0.147,   0.0,   0.0,  0.0,    0.218],
+    'theta': [0.0, -np.pi/2, 0.0, -np.pi/2, -np.pi]
+}
+youbot_joint_offsets = [
+    170.0 * np.pi / 180.0,    
+    -65.0 * np.pi / 180.0,    
+    146.0 * np.pi / 180.0,    
+    -102.5 * np.pi / 180.0,   
+    167.5 * np.pi / 180.0     
+]
 
-# Joint offsets to align the DH model with the URDF representation
-youbot_joint_offsets = []
-
-# Create a new dictionary with the offsets applied to the theta values
 youbot_dh_offset_paramters = youbot_dh_parameters.copy()
-youbot_dh_offset_paramters['theta'] = [theta + offset for theta, offset in zip(youbot_dh_offset_paramters['theta'], youbot_joint_offsets)]
+youbot_dh_offset_paramters['theta'] = [
+    theta + offset
+    for theta, offset in zip(youbot_dh_offset_paramters['theta'], youbot_joint_offsets)
+]
 
-# Polarity correction for each joint reading
 youbot_joint_readings_polarity = [-1, 1, 1, 1, 1]
 # ╔════════════════════════════════════════════════════════════════════════╗
 # ║                        END OF SOLUTION FOR PART 1                      ║
@@ -45,7 +51,6 @@ def rotmat2q(R):
     q = Quaternion()
     angle = np.arccos((R[0, 0] + R[1, 1] + R[2, 2] - 1) / 2)
 
-    # Use np.isclose for robust floating point comparison
     if np.isclose(angle, 0.0):
         q.w = 1.0
         q.x = 0.0
@@ -71,13 +76,18 @@ class ForwardKinematicsOffsetNode(Node):
     def __init__(self):
         super().__init__('forward_kinematic_offset_node')
         
-        # Initialize the transform broadcaster
         self.br = TransformBroadcaster(self)
         
         # ╔════════════════════════════════════════════════════════════════════════╗
         # ║                     PART 3: INITIALIZE ROS 2 SUBSCRIBER                ║
         # ╚════════════════════════════════════════════════════════════════════════╝
-
+        self.subscription = self.create_subscription(
+            JointState,
+            'joint_states',         
+            self.fkine_wrapper,      
+            10                       
+        )
+        self.subscription
         # ╔════════════════════════════════════════════════════════════════════════╗
         # ║                              END OF PART 3                             ║
         # ╚════════════════════════════════════════════════════════════════════════╝
@@ -91,7 +101,35 @@ class ForwardKinematicsOffsetNode(Node):
         # ╔════════════════════════════════════════════════════════════════════════╗
         # ║                      PART 2: FKINE WRAPPER IMPLEMENTATION              ║
         # ╚════════════════════════════════════════════════════════════════════════╝
-        
+        joints = list(joint_msg.position[:5])
+
+        joints_corr = [
+            sign * angle
+            for sign, angle in zip(youbot_joint_readings_polarity, joints)
+        ]
+
+        for i in range(1, 6):  
+            T = forward_kinematics(
+                youbot_dh_offset_paramters,
+                joints_corr,
+                up_to_joint=i
+            )
+
+            p = T[0:3, 3]
+            R = T[0:3, 0:3]
+            q = rotmat2q(R)
+
+            tf_msg = TransformStamped()
+            tf_msg.header.stamp = self.get_clock().now().to_msg()
+            tf_msg.header.frame_id = 'base_link'
+            tf_msg.child_frame_id = f'arm_link_{i}_offset'
+
+            tf_msg.transform.translation.x = float(p[0])
+            tf_msg.transform.translation.y = float(p[1])
+            tf_msg.transform.translation.z = float(p[2])
+            tf_msg.transform.rotation = q
+
+            self.br.sendTransform(tf_msg)
         # ╔════════════════════════════════════════════════════════════════════════╗
         # ║                              END OF PART 2                             ║
         # ╚════════════════════════════════════════════════════════════════════════╝

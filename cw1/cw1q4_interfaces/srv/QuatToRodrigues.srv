@@ -1,4 +1,7 @@
 # Request: A quaternion to be converted.
-
+geometry_msgs/Quaternion q
 ---
 # Response: The resulting Rodrigues representation.
+std_msgs/Float64 x
+std_msgs/Float64 y
+std_msgs/Float64 z

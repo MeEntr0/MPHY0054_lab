@@ -30,9 +30,9 @@ stacked on the z-axis.
 # ╚════════════════════════════════════════════════════════════════════════╝
 # Populate the values inside the youbot_dh_parameters dictionary with the ones you found in question 5a.
 
-youbot_dh_parameters = {'a':[0, 0, 0, 0, 0],
-                        'alpha': [0, 0, 0, 0, 0],
-                        'd' : [0, 0, 0, 0, 0],
+youbot_dh_parameters = {'a':[0.0,   0.155, 0.135, 0.0,   0.0],
+                        'alpha': [-np.pi/2, 0.0, 0.0, -np.pi/2, 0.0],
+                        'd' : [0.147, 0.0,   0.0,  0.113,  0.105],
                         'theta' : [0, 0, 0, 0, 0]}
 
 
@@ -73,7 +73,12 @@ def standard_dh(a, alpha, d, theta):
     # ╔════════════════════════════════════════════════════════════════════════╗
     # ║                    PART 2: COMPLETE THE DH FUNCTION                    ║
     # ╚════════════════════════════════════════════════════════════════════════╝
-
+    A = np.array([
+        [np.cos(theta), -np.sin(theta)*np.cos(alpha),  np.sin(theta)*np.sin(alpha), a*np.cos(theta)],
+        [np.sin(theta),  np.cos(theta)*np.cos(alpha), -np.cos(theta)*np.sin(alpha), a*np.sin(theta)],
+        [0,              np.sin(alpha),                np.cos(alpha),               d],
+        [0,              0,                            0,                           1]
+    ])
     # ╔════════════════════════════════════════════════════════════════════════╗
     # ╚════════════════════════════════════════════════════════════════════════╝
     
@@ -96,7 +101,14 @@ def forward_kinematics(dh_dict, joints_readings, up_to_joint=5):
     # ╔════════════════════════════════════════════════════════════════════════╗
     # ║                PART 3: COMPLETE THE FORWARD KINEMATICS                 ║
     # ╚════════════════════════════════════════════════════════════════════════╝
-
+    for i in range(up_to_joint):
+        A_i = standard_dh(
+            dh_dict['a'][i],
+            dh_dict['alpha'][i],
+            dh_dict['d'][i],
+            joints_readings[i]
+        )
+        T = T @ A_i
     # ╔════════════════════════════════════════════════════════════════════════╗
     # ╚════════════════════════════════════════════════════════════════════════╝
     
@@ -127,8 +139,24 @@ class ForwardKinematicsNode(Node):
 
         # ╔════════════════════════════════════════════════════════════════════════╗
         # ║                  PART 4: COMPLETE THE ROS 2 WRAPPER                  ║
-        # ╚════════════════════════════════════════════════════════════════════════╝
-        
+        joints = list(joint_msg.position[:5])  # extract first 5 joints
+
+        T = forward_kinematics(youbot_dh_parameters, joints, up_to_joint=5)
+
+        transform = TransformStamped()
+        transform.header.stamp = self.get_clock().now().to_msg()
+        transform.header.frame_id = "base_link"
+        transform.child_frame_id = "tool_link"
+
+        transform.transform.translation.x = float(T[0, 3])
+        transform.transform.translation.y = float(T[1, 3])
+        transform.transform.translation.z = float(T[2, 3])
+
+        R = T[0:3, 0:3]
+        q = rotmat2q(R)
+        transform.transform.rotation = q
+
+        self.br.sendTransform(transform)
         # ╔════════════════════════════════════════════════════════════════════════╗
         # ╚════════════════════════════════════════════════════════════════════════╝
 
