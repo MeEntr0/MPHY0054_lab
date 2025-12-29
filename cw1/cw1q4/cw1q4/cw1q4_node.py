@@ -6,6 +6,8 @@ import numpy as np
 from std_msgs.msg import Float64
 
 # ###################### STUDENT CODE START (IMPORT SERVICE) ######################
+from cw1q4_interfaces.srv import QuatToEuler, QuatToRodrigues
+import math
 
 # ####################### STUDENT CODE END (IMPORT SERVICE) #######################
 
@@ -20,9 +22,9 @@ class QuatToEulerService(Node):
         response.z, response.y, response.x = Float64(), Float64(), Float64()
 
         # ###################### STUDENT CODE START (QUATERNION TO EULER) ######################
-        # TODO: Implement the conversion from quaternion to Z-Y-X Euler angles (in RADIANS).
-        # Store the results in response.z.data, response.y.data, and response.x.data
-        # Z-angle (yaw)
+        response.z.data = math.atan2(2 * (q_w*q_z + q_x*q_y), 1 - 2 * (q_y*q_y + q_z*q_z))
+        response.y.data = math.asin(2 * (q_w*q_y - q_z*q_x))
+        response.x.data = math.atan2(2 * (q_w*q_x + q_y*q_z), 1 - 2 * (q_x*q_x + q_y*q_y))
 
         # ####################### STUDENT CODE END (QUATERNION TO EULER) #######################
 
@@ -40,7 +42,17 @@ class QuatToRodriguesService(Node):
         response.x, response.y, response.z = Float64(), Float64(), Float64()
 
         # ###################### STUDENT CODE START (QUATERNION TO RODRIGUES) ##################
-        # TODO: Implement the conversion from quaternion to Rodrigues representation.
+        theta = 2 * math.acos(q_w)
+        den = math.sqrt(q_x*q_x + q_y*q_y + q_z*q_z)
+
+        if den < 1e-6:   #avoid 0
+            response.x.data = 0.0
+            response.y.data = 0.0
+            response.z.data = 0.0
+        else:
+            response.x.data = q_x / den * theta
+            response.y.data = q_y / den * theta
+            response.z.data = q_z / den * theta
 
         # ####################### STUDENT CODE END (QUATERNION TO RODRIGUES) ###################
 
