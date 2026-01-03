@@ -86,8 +86,46 @@ class YoubotTrajectoryPlanning(Node):
         ############################################################################
         # QUESTION A START
         ############################################################################
+        import os
 
-        raise NotImplementedError("Question 2a: implement load_targets()")
+        # 1) 找到 bag 的 db3
+        pkg = get_package_share_directory("cw2q2")
+        bag_dir = os.path.join(pkg, "bags", "data_ros2")
+        db_path = glob.glob(os.path.join(bag_dir, "*.db3"))[0]
+
+        # 2) 从 sqlite3 里读 joint_data 的消息
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM topics WHERE name=?", ("joint_data",))
+        topic_id = cur.fetchone()[0]
+
+        cur.execute("SELECT data FROM messages WHERE topic_id=? ORDER BY timestamp ASC", (topic_id,))
+        rows = cur.fetchall()
+        conn.close()
+
+        qs, tfs = [], []
+        for (blob,) in rows:
+            msg = deserialize_message(blob, JointState)
+
+            # 3) name 是空的，只能按 position 取前 5 个关节（取前 4 个目标点）
+            if len(msg.position) >= 5:
+                q = np.array(msg.position[:5], dtype=float)
+                tfs.append(self.kdl_youbot.forward_kinematics(q))
+                qs.append(q)
+            else:
+                raise RuntimeError("JointState position has less than 5 values.")
+
+
+        if len(qs) != 4:
+            raise RuntimeError(f"Expected 4 targets, got {len(qs)}")
+
+        # 4) 整理输出：q(5,N), tfs(4,4,N)，并缓存 checkpoint xyz 给 marker/到达判断用
+        target_q = np.array(qs).T
+        target_tfs = np.stack(tfs, axis=2)
+        self._checkpoint_positions = [target_tfs[:3, 3, i] for i in range(target_tfs.shape[2])]
+        self._checkpoint_reached = [False] * target_tfs.shape[2]
+
+        return target_q, target_tfs
         ############################################################################
         # QUESTION A END
         ############################################################################
@@ -99,8 +137,27 @@ class YoubotTrajectoryPlanning(Node):
         ############################################################################
         # QUESTION B START
         ############################################################################
+        N = checkpoints_tf.shape[2]
+        pts = checkpoints_tf[:3, 3, :].T   # (N,3)
 
-        raise NotImplementedError("Question 2b: implement get_shortest_path()")
+        start = 0
+        others = [i for i in range(N) if i != start]
+
+        best_order = None
+        best_dist = float("inf")
+
+        for perm in itertools.permutations(others):
+            order = [start] + list(perm)
+            d = 0.0
+            for i in range(len(order) - 1):
+                d += np.linalg.norm(pts[order[i+1]] - pts[order[i]])
+            if d < best_dist:
+                best_dist = d
+                best_order = order
+
+        self.get_logger().info(f"Best order: {best_order}, total dist={best_dist:.4f}")
+        return np.array(best_order, dtype=int)
+
         ############################################################################
         # QUESTION B END
         ############################################################################
