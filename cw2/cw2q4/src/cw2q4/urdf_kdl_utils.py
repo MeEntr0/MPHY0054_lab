@@ -16,12 +16,14 @@ def build_kdl_chain_from_urdf(robot_description: str, base_link: str, tip_link: 
 
     root = ET.fromstring(robot_description)
     joints = _extract_joint_map(root)
+    link_inertias = _extract_link_inertias(root)
     parent_index = _index_joints_by_parent(joints)
     joint_path = _find_joint_path(parent_index, joints, base_link, tip_link)
 
     chain = kdl.Chain()
     for joint_name in joint_path:
         joint_data = joints[joint_name]
+        inertia = _create_rigid_body_inertia(link_inertias.get(joint_data['child']))
         frame = kdl.Frame(
             kdl.Rotation.RPY(*joint_data['rpy']),
             kdl.Vector(*joint_data['xyz'])
@@ -31,7 +33,8 @@ def build_kdl_chain_from_urdf(robot_description: str, base_link: str, tip_link: 
             chain.addSegment(kdl.Segment(
                 joint_data['child'],
                 kdl.Joint(joint_data['name']),
-                frame
+                frame,
+                inertia
             ))
             continue
 
@@ -42,7 +45,7 @@ def build_kdl_chain_from_urdf(robot_description: str, base_link: str, tip_link: 
         ))
 
         joint = _create_kdl_joint(joint_data)
-        chain.addSegment(kdl.Segment(joint_data['child'], joint))
+        chain.addSegment(kdl.Segment(joint_data['child'], joint, kdl.Frame(), inertia))
 
     return chain
 
@@ -124,6 +127,36 @@ def _find_joint_path(parent_index: Dict[str, List[str]],
     raise ValueError(f'Unable to find joint path from {base_link} to {tip_link}.')
 
 
+def _extract_link_inertias(root: ET.Element) -> Dict[str, Dict]:
+    link_inertias: Dict[str, Dict] = {}
+    for link_el in root.findall('link'):
+        name = link_el.attrib.get('name')
+        inertial_el = link_el.find('inertial')
+        if not name or inertial_el is None:
+            continue
+
+        mass_el = inertial_el.find('mass')
+        inertia_el = inertial_el.find('inertia')
+        if mass_el is None or inertia_el is None:
+            continue
+
+        origin_el = inertial_el.find('origin')
+        link_inertias[name] = {
+            'mass': float(mass_el.attrib.get('value', 0.0)),
+            'xyz': _parse_vector(origin_el, 'xyz', [0.0, 0.0, 0.0]),
+            'rpy': _parse_vector(origin_el, 'rpy', [0.0, 0.0, 0.0]),
+            'inertia': [
+                float(inertia_el.attrib.get('ixx', 0.0)),
+                float(inertia_el.attrib.get('iyy', 0.0)),
+                float(inertia_el.attrib.get('izz', 0.0)),
+                float(inertia_el.attrib.get('ixy', 0.0)),
+                float(inertia_el.attrib.get('ixz', 0.0)),
+                float(inertia_el.attrib.get('iyz', 0.0)),
+            ],
+        }
+    return link_inertias
+
+
 def _parse_vector(element: ET.Element, attribute: str, default: List[float]) -> List[float]:
     if element is None:
         return default
@@ -147,3 +180,42 @@ def _create_kdl_joint(joint_data: Dict) -> kdl.Joint:
     if joint_data['type'] == 'prismatic':
         return kdl.Joint(joint_data['name'], kdl.Vector(), axis_vector, kdl.Joint.TransAxis)
     return kdl.Joint(joint_data['name'])
+
+
+def _create_rigid_body_inertia(inertia_data: Dict) -> kdl.RigidBodyInertia:
+    if not inertia_data:
+        return kdl.RigidBodyInertia()
+
+    mass = inertia_data['mass']
+    cog = kdl.Vector(*inertia_data['xyz'])
+
+    rotation = kdl.Rotation.RPY(*inertia_data['rpy'])
+    inertia_tensor = _rotate_inertia_tensor(inertia_data['inertia'], rotation)
+
+    return kdl.RigidBodyInertia(
+        mass,
+        cog,
+        kdl.RotationalInertia(
+            inertia_tensor[0, 0],
+            inertia_tensor[1, 1],
+            inertia_tensor[2, 2],
+            inertia_tensor[0, 1],
+            inertia_tensor[0, 2],
+            inertia_tensor[1, 2],
+        ),
+    )
+
+
+def _rotate_inertia_tensor(inertia_values: List[float], rotation: kdl.Rotation) -> np.ndarray:
+    Ixx, Iyy, Izz, Ixy, Ixz, Iyz = inertia_values
+    inertia_mat = np.array([
+        [Ixx, Ixy, Ixz],
+        [Ixy, Iyy, Iyz],
+        [Ixz, Iyz, Izz],
+    ])
+    rot_mat = np.array([
+        [rotation[0, 0], rotation[0, 1], rotation[0, 2]],
+        [rotation[1, 0], rotation[1, 1], rotation[1, 2]],
+        [rotation[2, 0], rotation[2, 1], rotation[2, 2]],
+    ])
+    return rot_mat @ inertia_mat @ rot_mat.T
