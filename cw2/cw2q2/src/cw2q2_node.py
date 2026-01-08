@@ -74,38 +74,33 @@ class YoubotTrajectoryPlanning(Node):
         # QUESTION E START
         ############################################################################
 
-        # 0) 初始关节角：这里一般是全0（KDL里默认就是0），也可以作为IK初值
         init_q = np.array(self.kdl_youbot.kdl_jnt_array_to_list(
             self.kdl_youbot.current_joint_position
         ), dtype=float)
 
-        # 1) 读 bag：4个目标关节角 + 4个目标末端TF
         target_q, target_tfs = self.load_targets()  # target_q:(5,4), target_tfs:(4,4,4)
 
-        # 2) 把“起点末端TF”也加入checkpoint（起点 + 4目标 = 5个checkpoint）
         start_tf = self.kdl_youbot.forward_kinematics(init_q)
         checkpoints_tf = np.concatenate((start_tf[:, :, None], target_tfs), axis=2)  # (4,4,5)
 
-        # 初始化marker与checkpoint缓存（用于RViz和到达变绿）
         self._checkpoint_positions = [checkpoints_tf[:3, 3, i] for i in range(checkpoints_tf.shape[2])]
         self._checkpoint_reached = [False] * checkpoints_tf.shape[2]
         self.init_markers(checkpoints_tf)
 
-        # 3) 算最短访问顺序（默认从0号checkpoint出发）
+        # shortest visiting sequence
         order = self.get_shortest_path(checkpoints_tf)
 
-        # 4) 生成中间TF（解耦：先转后移）
         num_points = 8
         full_tfs = self.intermediate_tfs(order, checkpoints_tf, num_points)  # (4,4,M)
 
-        # 5) TF -> joints
+        # TF -> joints
         q_path = self.full_checkpoints_to_joints(full_tfs, init_q)  # (5,M)
 
-        # 6) 打包成 JointTrajectory
+        # JointTrajectory
         traj = JointTrajectory()
         traj.points = []
 
-        dt = 0.05  # 和你0.05s发布joint_state的节奏一致
+        dt = 0.05
         for i in range(q_path.shape[1]):
             pt = JointTrajectoryPoint()
             pt.positions = q_path[:, i].tolist()
@@ -131,12 +126,10 @@ class YoubotTrajectoryPlanning(Node):
         ############################################################################
         import os
 
-        # 1) 找到 bag 的 db3
         pkg = get_package_share_directory("cw2q2")
         bag_dir = os.path.join(pkg, "bags", "data_ros2")
         db_path = glob.glob(os.path.join(bag_dir, "*.db3"))[0]
 
-        # 2) 从 sqlite3 里读 joint_data 的消息
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         cur.execute("SELECT id FROM topics WHERE name=?", ("joint_data",))
@@ -150,7 +143,6 @@ class YoubotTrajectoryPlanning(Node):
         for (blob,) in rows:
             msg = deserialize_message(blob, JointState)
 
-            # 3) name 是空的，只能按 position 取前 5 个关节（取前 4 个目标点）
             if len(msg.position) >= 5:
                 q = np.array(msg.position[:5], dtype=float)
                 tfs.append(self.kdl_youbot.forward_kinematics(q))
@@ -162,7 +154,6 @@ class YoubotTrajectoryPlanning(Node):
         if len(qs) != 4:
             raise RuntimeError(f"Expected 4 targets, got {len(qs)}")
 
-        # 4) 整理输出：q(5,N), tfs(4,4,N)，并缓存 checkpoint xyz 给 marker/到达判断用
         target_q = np.array(qs).T
         target_tfs = np.stack(tfs, axis=2)
         self._checkpoint_positions = [target_tfs[:3, 3, i] for i in range(target_tfs.shape[2])]
@@ -214,15 +205,14 @@ class YoubotTrajectoryPlanning(Node):
         ############################################################################
 
         idx = list(sorted_checkpoint_idx)
-        full = [target_checkpoint_tfs[:, :, idx[0]]]  # 起点先放进去
+        full = [target_checkpoint_tfs[:, :, idx[0]]]
 
         for i in range(len(idx) - 1):
             Ta = target_checkpoint_tfs[:, :, idx[i]]
             Tb = target_checkpoint_tfs[:, :, idx[i + 1]]
-            seg = self.decoupled_rot_and_trans(Ta, Tb, num_points)  # (4,4,2*num_points)
+            seg = self.decoupled_rot_and_trans(Ta, Tb, num_points)
 
 
-            # 逐帧拼接
             for k in range(seg.shape[2]):
                 full.append(seg[:, :, k])
 
@@ -248,12 +238,10 @@ class YoubotTrajectoryPlanning(Node):
                             [w[2], 0, -w[0]],
                             [-w[1], w[0], 0]], dtype=float)
 
-        # 计算相对旋转
         Rrel = Ra.T @ Rb
         c = np.clip((np.trace(Rrel) - 1.0) / 2.0, -1.0, 1.0)
         theta = np.arccos(c)
 
-        # 旋转轴（小角度时随便给个轴即可）
         if theta < 1e-8:
             axis = np.array([1.0, 0.0, 0.0], dtype=float)
         else:
@@ -263,7 +251,7 @@ class YoubotTrajectoryPlanning(Node):
 
         tfs = []
 
-        # 阶段1：旋转（位置固定 pa）
+        # 1
         K = skew(axis)
         K2 = K @ K
         I = np.eye(3)
@@ -275,7 +263,7 @@ class YoubotTrajectoryPlanning(Node):
             T[:3, 3] = pa
             tfs.append(T)
 
-        # 阶段2：平移（姿态固定 Rb）
+        # 2
         for k in range(1, num_points + 1):
             a = k / num_points
             T = np.eye(4)
@@ -295,11 +283,6 @@ class YoubotTrajectoryPlanning(Node):
         ############################################################################
         # QUESTION D START
         ############################################################################
-        """
-        对整条TF路径逐点做IK，得到关节路径
-        输入: full_checkpoint_tfs (4,4,M), init_joint_position (5,)
-        输出: q_path (5,M)
-        """
         M = full_checkpoint_tfs.shape[2]
         q_path = np.zeros((5, M), dtype=float)
 
@@ -307,7 +290,7 @@ class YoubotTrajectoryPlanning(Node):
 
         for i in range(M):
             T_des = full_checkpoint_tfs[:, :, i]
-            q = self.ik_position_only(T_des, q)   # 用上一个解当初值（更稳）
+            q = self.ik_position_only(T_des, q)
             q_path[:, i] = q
 
         return q_path
@@ -322,17 +305,13 @@ class YoubotTrajectoryPlanning(Node):
         ############################################################################
         # QUESTION D START
         ############################################################################
-        """
-        只考虑位置的迭代IK：给定目标pose(4x4)，从初值q0出发求关节角
-        返回: q (5,)
-        """
         p_des = pose[:3, 3]
         q = np.array(q0, dtype=float).copy()
 
         max_iters = 200
-        tol = 1e-3          # 位置误差阈值（米）
-        lam = 0.05          # 阻尼系数
-        alpha = 0.6         # 步长（别太大，稳一点）
+        tol = 1e-3
+        lam = 0.05
+        alpha = 0.6
 
         for _ in range(max_iters):
             T = self.kdl_youbot.forward_kinematics(q)
@@ -342,15 +321,10 @@ class YoubotTrajectoryPlanning(Node):
             if np.linalg.norm(err) < tol:
                 break
 
-            # 如果没收敛，给个提示（可选）
-            if np.linalg.norm(err) >= tol:
-                self.get_logger().warn("IK did not fully converge for one checkpoint.")
+            J = self.kdl_youbot.get_jacobian(q)
+            Jp = J[:3, :]
 
-
-            J = self.kdl_youbot.get_jacobian(q)   # (6,5)
-            Jp = J[:3, :]                         # 只取平移部分 (3,5)
-
-            # Damped Least Squares: dq = J^T (J J^T + lam^2 I)^(-1) err
+            # dq = J^T (J J^T + lam^2 I)^(-1) err
             A = Jp @ Jp.T + (lam ** 2) * np.eye(3)
             dq = Jp.T @ np.linalg.solve(A, err)
 

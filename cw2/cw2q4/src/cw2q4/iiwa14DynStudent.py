@@ -46,19 +46,18 @@ class Iiwa14DynamicStudent(Iiwa14DynamicBase):
         ############################################################################
         jacobian = np.zeros((6, 7))
 
-        # 1) 先得到“第 up_to_joint 个 link 的质心”在 base 下的位置 p_com
+        # 1
         T_com = self.forward_kinematics_centre_of_mass(joint_readings, up_to_joint)
         p_com = T_com[0:3, 3]
 
-        # 2) 对每个会影响该 link 的关节 i 计算 Jacobian 列
-        #    i >= up_to_joint 的关节不会影响这个 link 的 CoM，列保持 0
+        # 2
         for i in range(up_to_joint):
             T_i = self.forward_kinematics(joint_readings, i)
             p_i = T_i[0:3, 3]
             z_i = T_i[0:3, 0:3].dot(np.array([0, 0, 1]))
 
-            jacobian[0:3, i] = np.cross(z_i, (p_com - p_i))  # 线速度部分
-            jacobian[3:6, i] = z_i                           # 角速度部分（转动关节）
+            jacobian[0:3, i] = np.cross(z_i, (p_com - p_i))
+            jacobian[3:6, i] = z_i
 
         return jacobian
         ############################################################################
@@ -98,7 +97,6 @@ class Iiwa14DynamicStudent(Iiwa14DynamicBase):
         ############################################################################
         B = np.zeros((7, 7))
 
-        # 对每个link的质心做贡献叠加
         for i in range(1, len(joint_readings) + 1):   # i = 1..7
             jacobian = self.get_jacobian_centre_of_mass(joint_readings, i)
 
@@ -140,9 +138,9 @@ class Iiwa14DynamicStudent(Iiwa14DynamicBase):
         q = np.array(joint_readings)
         qdot = np.array(joint_velocities)
 
-        # 1) 预计算 dB/dq_k（中心差分）
+        # 1) pre dB/dq_k
         eps = 1e-6
-        dB = []  # dB[k] 是 ∂B/∂q_k, (7,7)
+        dB = []
 
         for k in range(7):
             q_p = q.copy()
@@ -154,7 +152,7 @@ class Iiwa14DynamicStudent(Iiwa14DynamicBase):
             B_m = self.get_B(q_m.tolist())
             dB.append((B_p - B_m) / (2 * eps))
 
-        # 2) 按课件：h_ijk = ∂b_ij/∂q_k - 0.5 * ∂b_jk/∂q_i
+        # 2) h_ijk = ∂b_ij/∂q_k - 0.5 * ∂b_jk/∂q_i
         #    c_ij = sum_k h_ijk * qdot_k
         #    (C qdot)_i = sum_j c_ij * qdot_j
         for i in range(7):
@@ -189,7 +187,7 @@ class Iiwa14DynamicStudent(Iiwa14DynamicBase):
         ############################################################################
         g = np.zeros(7)
 
-        # 计算势能 P(q) = sum_i m_i * g * z_i  (z轴朝上时)
+        # P(q) = sum_i m_i * g * z_i
         def potential_energy(q_list):
             P = 0.0
             for i in range(1, 8):
@@ -201,7 +199,7 @@ class Iiwa14DynamicStudent(Iiwa14DynamicBase):
         eps = 1e-6
         q = np.array(joint_readings)
 
-        # 中心差分：g_j = dP/dq_j
+        # g_j = dP/dq_j
         for j in range(7):
             q_p = q.copy()
             q_m = q.copy()
